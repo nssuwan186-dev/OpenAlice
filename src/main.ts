@@ -11,6 +11,7 @@ import { createThinkingTools } from './extension/thinking-kit/index.js'
 import {
   AccountManager,
   CcxtAccount,
+  createCcxtProviderTools,
   wireAccountTrading,
   createTradingTools,
   createPlatformFromConfig,
@@ -365,7 +366,7 @@ async function main() {
       // Re-register CCXT-specific tools if this is a CCXT account
       if (platform.providerType !== 'alpaca') {
         toolCenter.register(
-          CcxtAccount.createProviderTools({
+          createCcxtProviderTools({
             accountManager,
             getGit: (id) => accountSetups.get(id)?.git,
             getGitState: (id) => accountSetups.get(id)?.getGitState(),
@@ -497,7 +498,7 @@ async function main() {
     if (!hasCcxt) return
 
     toolCenter.register(
-      CcxtAccount.createProviderTools({
+      createCcxtProviderTools({
         accountManager,
         getGit: (id) => accountSetups.get(id)?.git,
         getGitState: (id) => accountSetups.get(id)?.getGitState(),

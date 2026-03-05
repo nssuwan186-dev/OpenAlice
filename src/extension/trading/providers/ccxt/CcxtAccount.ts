@@ -23,41 +23,13 @@ import type {
   OrderBook,
   OrderBookLevel,
 } from '../../interfaces.js'
-import { tool } from 'ai'
-import { z } from 'zod'
-import { resolveAccounts } from '../../adapter.js'
-import type { AccountResolver } from '../../adapter.js'
-
-export interface CcxtAccountConfig {
-  id?: string
-  label?: string
-  exchange: string
-  apiKey: string
-  apiSecret: string
-  password?: string
-  sandbox: boolean
-  demoTrading?: boolean
-  defaultMarketType: 'spot' | 'swap'
-  options?: Record<string, unknown>
-}
-
-// ==================== CCXT market shape ====================
-
-interface CcxtMarket {
-  id: string        // exchange-native symbol, e.g. "BTCUSDT"
-  symbol: string    // CCXT unified format, e.g. "BTC/USDT:USDT"
-  base: string      // e.g. "BTC"
-  quote: string     // e.g. "USDT"
-  type: string      // "spot" | "swap" | "future" | "option"
-  settle?: string   // e.g. "USDT" (for derivatives)
-  active?: boolean
-  precision?: { price?: number; amount?: number }
-}
-
-const MAX_INIT_RETRIES = 8
-const INIT_RETRY_BASE_MS = 500
-
-// ==================== CcxtAccount ====================
+import type { CcxtAccountConfig, CcxtMarket } from './ccxt-types.js'
+import { MAX_INIT_RETRIES, INIT_RETRY_BASE_MS } from './ccxt-types.js'
+import {
+  mapOrderStatus,
+  marketToContract,
+  contractToCcxt,
+} from './ccxt-contracts.js'
 
 export class CcxtAccount implements ITradingAccount {
   readonly id: string
@@ -107,6 +79,26 @@ export class CcxtAccount implements ITradingAccount {
 
     if (config.demoTrading) {
       (this.exchange as unknown as { enableDemoTrading: (enable: boolean) => void }).enableDemoTrading(true)
+    }
+  }
+
+  // ---- Helpers ----
+
+  private get markets() {
+    return this.exchange.markets as unknown as Record<string, CcxtMarket>
+  }
+
+  private ensureInit(): void {
+    if (!this.initialized) {
+      throw new Error(`CcxtAccount[${this.id}] not initialized. Call init() first.`)
+    }
+  }
+
+  private ensureWritable(): void {
+    if (this.readOnly) {
+      throw new Error(
+        `CcxtAccount[${this.id}] is in read-only mode (no API keys). This operation requires authentication.`,
+      )
     }
   }
 
@@ -167,7 +159,7 @@ export class CcxtAccount implements ITradingAccount {
     // CCXT exchanges typically don't need explicit closing
   }
 
-  // ---- Contract search (IBKR: reqMatchingSymbols + reqContractDetails) ----
+  // ---- Contract search ----
 
   async searchContracts(pattern: string): Promise<ContractDescription[]> {
     this.ensureInit()
@@ -176,7 +168,7 @@ export class CcxtAccount implements ITradingAccount {
     const searchBase = pattern.toUpperCase()
     const matchedMarkets: CcxtMarket[] = []
 
-    for (const market of Object.values(this.exchange.markets) as unknown as CcxtMarket[]) {
+    for (const market of Object.values(this.markets)) {
       if (market.active === false) continue
       if (market.base.toUpperCase() !== searchBase) continue
 
@@ -213,7 +205,7 @@ export class CcxtAccount implements ITradingAccount {
       : undefined
 
     return matchedMarkets.map(market => ({
-      contract: this.marketToContract(market),
+      contract: marketToContract(market, this.exchangeName),
       derivativeSecTypes,
     }))
   }
@@ -221,14 +213,14 @@ export class CcxtAccount implements ITradingAccount {
   async getContractDetails(query: Partial<Contract>): Promise<ContractDetails | null> {
     this.ensureInit()
 
-    const ccxtSymbol = this.contractToCcxt(query as Contract)
+    const ccxtSymbol = contractToCcxt(query as Contract, this.markets, this.exchangeName)
     if (!ccxtSymbol) return null
 
-    const market = this.exchange.markets[ccxtSymbol] as unknown as CcxtMarket | undefined
+    const market = this.markets[ccxtSymbol]
     if (!market) return null
 
     return {
-      contract: this.marketToContract(market),
+      contract: marketToContract(market, this.exchangeName),
       longName: `${market.base}/${market.quote} ${market.type}${market.settle ? ` (${market.settle} settled)` : ''}`,
       minTick: market.precision?.price,
     }
@@ -240,7 +232,7 @@ export class CcxtAccount implements ITradingAccount {
     this.ensureInit()
     this.ensureWritable()
 
-    const ccxtSymbol = this.contractToCcxt(order.contract)
+    const ccxtSymbol = contractToCcxt(order.contract, this.markets, this.exchangeName)
     if (!ccxtSymbol) {
       return { success: false, error: 'Cannot resolve contract to CCXT symbol' }
     }
@@ -279,7 +271,7 @@ export class CcxtAccount implements ITradingAccount {
         this.orderSymbolCache.set(ccxtOrder.id, ccxtSymbol)
       }
 
-      const status = this.mapOrderStatus(ccxtOrder.status)
+      const status = mapOrderStatus(ccxtOrder.status)
 
       return {
         success: true,
@@ -404,7 +396,7 @@ export class CcxtAccount implements ITradingAccount {
     const result: Position[] = []
 
     for (const p of raw) {
-      const market = this.exchange.markets[p.symbol]
+      const market = this.markets[p.symbol]
       if (!market) continue
 
       const size = Math.abs(parseFloat(String(p.contracts ?? 0)) * parseFloat(String(p.contractSize ?? 1)))
@@ -417,7 +409,7 @@ export class CcxtAccount implements ITradingAccount {
       const unrealizedPnL = parseFloat(String(p.unrealizedPnl ?? 0))
 
       result.push({
-        contract: this.marketToContract(market as unknown as CcxtMarket),
+        contract: marketToContract(market, this.exchangeName),
         side: p.side === 'long' ? 'long' : 'short',
         qty: size,
         avgEntryPrice: entryPrice,
@@ -458,7 +450,7 @@ export class CcxtAccount implements ITradingAccount {
     const result: Order[] = []
 
     for (const o of allOrders) {
-      const market = this.exchange.markets[o.symbol]
+      const market = this.markets[o.symbol]
       if (!market) continue
 
       if (o.id) {
@@ -467,13 +459,13 @@ export class CcxtAccount implements ITradingAccount {
 
       result.push({
         id: o.id,
-        contract: this.marketToContract(market as unknown as CcxtMarket),
+        contract: marketToContract(market, this.exchangeName),
         side: o.side as 'buy' | 'sell',
         type: (o.type ?? 'market') as Order['type'],
         qty: o.amount ?? 0,
         price: o.price ?? undefined,
         reduceOnly: o.reduceOnly ?? false,
-        status: this.mapOrderStatus(o.status),
+        status: mapOrderStatus(o.status),
         filledPrice: o.average ?? undefined,
         filledQty: o.filled ?? undefined,
         filledAt: o.lastTradeTimestamp ? new Date(o.lastTradeTimestamp) : undefined,
@@ -487,15 +479,15 @@ export class CcxtAccount implements ITradingAccount {
   async getQuote(contract: Contract): Promise<Quote> {
     this.ensureInit()
 
-    const ccxtSymbol = this.contractToCcxt(contract)
+    const ccxtSymbol = contractToCcxt(contract, this.markets, this.exchangeName)
     if (!ccxtSymbol) throw new Error('Cannot resolve contract to CCXT symbol')
 
     const ticker = await this.exchange.fetchTicker(ccxtSymbol)
-    const market = this.exchange.markets[ccxtSymbol]
+    const market = this.markets[ccxtSymbol]
 
     return {
       contract: market
-        ? this.marketToContract(market as unknown as CcxtMarket)
+        ? marketToContract(market, this.exchangeName)
         : contract,
       last: ticker.last ?? 0,
       bid: ticker.bid ?? 0,
@@ -523,90 +515,20 @@ export class CcxtAccount implements ITradingAccount {
     }
   }
 
-  // ---- Provider tools (registered dynamically when account comes online) ----
-
-  static createProviderTools(resolver: AccountResolver) {
-    const { accountManager } = resolver
-
-    /** Resolve to exactly one CcxtAccount. Returns error object if unable. */
-    const resolveCcxtOne = (source?: string): { account: CcxtAccount; id: string } | { error: string } => {
-      const targets = resolveAccounts(accountManager, source)
-        .filter((t): t is { account: CcxtAccount; id: string } => t.account instanceof CcxtAccount)
-      if (targets.length === 0) return { error: 'No CCXT account available.' }
-      if (targets.length > 1) {
-        return { error: `Multiple CCXT accounts: ${targets.map(t => t.id).join(', ')}. Specify source.` }
-      }
-      return targets[0]
-    }
-
-    const sourceDesc =
-      'Account source — matches account id or provider name. Auto-resolves if only one CCXT account exists.'
-
-    return {
-      getFundingRate: tool({
-        description: `Query the current funding rate for a perpetual contract.
-
-Returns:
-- fundingRate: current/latest funding rate (e.g. 0.0001 = 0.01%)
-- nextFundingTime: when the next funding payment occurs
-- previousFundingRate: the previous period's rate
-
-Positive rate = longs pay shorts. Negative rate = shorts pay longs.`,
-        inputSchema: z.object({
-          symbol: z.string().describe('Trading pair symbol'),
-          source: z.string().optional().describe(sourceDesc),
-        }),
-        execute: async ({ symbol, source }) => {
-          const resolved = resolveCcxtOne(source)
-          if ('error' in resolved) return resolved
-          const { account, id } = resolved
-          const result = await account.getFundingRate({ symbol })
-          return { source: id, ...result }
-        },
-      }),
-
-      getOrderBook: tool({
-        description: `Query the order book (market depth) for a symbol.
-
-Returns bids and asks sorted by price. Each level is [price, amount].
-Use this to evaluate liquidity and potential slippage before placing large orders.`,
-        inputSchema: z.object({
-          symbol: z.string().describe('Trading pair symbol'),
-          limit: z
-            .number()
-            .int()
-            .min(1)
-            .max(100)
-            .optional()
-            .describe('Number of price levels per side (default: 20)'),
-          source: z.string().optional().describe(sourceDesc),
-        }),
-        execute: async ({ symbol, limit, source }) => {
-          const resolved = resolveCcxtOne(source)
-          if ('error' in resolved) return resolved
-          const { account, id } = resolved
-          const result = await account.getOrderBook({ symbol }, limit ?? 20)
-          return { source: id, ...result }
-        },
-      }),
-
-    }
-  }
-
   // ---- Provider-specific methods ----
 
   async getFundingRate(contract: Contract): Promise<FundingRate> {
     this.ensureInit()
 
-    const ccxtSymbol = this.contractToCcxt(contract)
+    const ccxtSymbol = contractToCcxt(contract, this.markets, this.exchangeName)
     if (!ccxtSymbol) throw new Error('Cannot resolve contract to CCXT symbol')
 
     const funding = await this.exchange.fetchFundingRate(ccxtSymbol)
-    const market = this.exchange.markets[ccxtSymbol]
+    const market = this.markets[ccxtSymbol]
 
     return {
       contract: market
-        ? this.marketToContract(market as unknown as CcxtMarket)
+        ? marketToContract(market, this.exchangeName)
         : contract,
       fundingRate: funding.fundingRate ?? 0,
       nextFundingTime: funding.fundingDatetime ? new Date(funding.fundingDatetime) : undefined,
@@ -618,144 +540,19 @@ Use this to evaluate liquidity and potential slippage before placing large order
   async getOrderBook(contract: Contract, limit?: number): Promise<OrderBook> {
     this.ensureInit()
 
-    const ccxtSymbol = this.contractToCcxt(contract)
+    const ccxtSymbol = contractToCcxt(contract, this.markets, this.exchangeName)
     if (!ccxtSymbol) throw new Error('Cannot resolve contract to CCXT symbol')
 
     const book = await this.exchange.fetchOrderBook(ccxtSymbol, limit)
-    const market = this.exchange.markets[ccxtSymbol]
+    const market = this.markets[ccxtSymbol]
 
     return {
       contract: market
-        ? this.marketToContract(market as unknown as CcxtMarket)
+        ? marketToContract(market, this.exchangeName)
         : contract,
       bids: book.bids.map(([p, a]) => [p ?? 0, a ?? 0] as OrderBookLevel),
       asks: book.asks.map(([p, a]) => [p ?? 0, a ?? 0] as OrderBookLevel),
       timestamp: new Date(book.timestamp ?? Date.now()),
-    }
-  }
-
-  // ==================== Internal ====================
-
-  private ensureInit(): void {
-    if (!this.initialized) {
-      throw new Error(`CcxtAccount[${this.id}] not initialized. Call init() first.`)
-    }
-  }
-
-  private ensureWritable(): void {
-    if (this.readOnly) {
-      throw new Error(
-        `CcxtAccount[${this.id}] is in read-only mode (no API keys). This operation requires authentication.`,
-      )
-    }
-  }
-
-  /**
-   * Convert a CcxtMarket to a Contract.
-   * aliceId = "{exchangeName}-{market.id}"
-   */
-  private marketToContract(market: CcxtMarket): Contract {
-    return {
-      aliceId: `${this.exchangeName}-${market.id}`,
-      symbol: market.base,
-      secType: this.ccxtTypeToSecType(market.type),
-      exchange: this.exchangeName,
-      currency: market.quote,
-      localSymbol: market.symbol,       // CCXT unified symbol, e.g. "BTC/USDT:USDT"
-      description: `${market.base}/${market.quote} ${market.type}${market.settle ? ` (${market.settle} settled)` : ''}`,
-    }
-  }
-
-  /**
-   * Resolve a Contract to a CCXT symbol for API calls.
-   * Tries: aliceId → localSymbol → search by symbol+secType.
-   */
-  private contractToCcxt(contract: Contract): string | null {
-    // 1. aliceId → market.id → look up in markets
-    if (contract.aliceId) {
-      const ccxtSymbol = this.aliceIdToCcxt(contract.aliceId)
-      if (ccxtSymbol && this.exchange.markets[ccxtSymbol]) return ccxtSymbol
-      // aliceId uses market.id, but markets are indexed by ccxt symbol
-      // search by market.id
-      for (const m of Object.values(this.exchange.markets) as unknown as CcxtMarket[]) {
-        if (`${this.exchangeName}-${m.id}` === contract.aliceId) return m.symbol
-      }
-      return null
-    }
-
-    // 2. localSymbol is the CCXT unified symbol
-    if (contract.localSymbol && this.exchange.markets[contract.localSymbol]) {
-      return contract.localSymbol
-    }
-
-    // 3. Search by symbol + secType (resolve to unique)
-    if (contract.symbol) {
-      const candidates = this.resolveContractSync(contract)
-      if (candidates.length === 1) return candidates[0]
-      if (candidates.length > 1) {
-        // Ambiguous — caller should have resolved first
-        return null
-      }
-    }
-
-    return null
-  }
-
-  /** Synchronous search returning CCXT symbols. Used by contractToCcxt. */
-  private resolveContractSync(query: Partial<Contract>): string[] {
-    if (!query.symbol) return []
-
-    const searchBase = query.symbol.toUpperCase()
-    const results: string[] = []
-
-    for (const market of Object.values(this.exchange.markets) as unknown as CcxtMarket[]) {
-      if (market.active === false) continue
-      if (market.base.toUpperCase() !== searchBase) continue
-
-      if (query.secType) {
-        const marketSecType = this.ccxtTypeToSecType(market.type)
-        if (marketSecType !== query.secType) continue
-      }
-
-      if (query.currency && market.quote.toUpperCase() !== query.currency.toUpperCase()) continue
-
-      if (!query.currency) {
-        const quote = market.quote.toUpperCase()
-        if (quote !== 'USDT' && quote !== 'USD' && quote !== 'USDC') continue
-      }
-
-      results.push(market.symbol)
-    }
-
-    return results
-  }
-
-  /** Parse aliceId → raw nativeId (market.id) part. */
-  private aliceIdToCcxt(aliceId: string): string | null {
-    const prefix = `${this.exchangeName}-`
-    if (!aliceId.startsWith(prefix)) return null
-    return aliceId.slice(prefix.length)
-  }
-
-  private ccxtTypeToSecType(type: string): Contract['secType'] {
-    switch (type) {
-      case 'spot': return 'CRYPTO'
-      case 'swap': return 'CRYPTO'  // perpetual swap is still crypto
-      case 'future': return 'FUT'
-      case 'option': return 'OPT'
-      default: return 'CRYPTO'
-    }
-  }
-
-  private mapOrderStatus(status: string | undefined): Order['status'] {
-    switch (status) {
-      case 'closed': return 'filled'
-      case 'open': return 'pending'
-      case 'canceled':
-      case 'cancelled': return 'cancelled'
-      case 'expired':
-      case 'rejected': return 'rejected'
-      default: return 'pending'
     }
   }
 }
