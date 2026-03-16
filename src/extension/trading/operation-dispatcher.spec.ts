@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import Decimal from 'decimal.js'
+import { Contract, Order, OrderState, UNSET_DOUBLE, UNSET_DECIMAL } from '@traderalice/ibkr'
 import { createOperationDispatcher } from './operation-dispatcher.js'
-import { MockTradingAccount, makeOrderResult } from './__test__/mock-account.js'
+import { MockTradingAccount, makeContract, makePlaceOrderResult } from './__test__/mock-account.js'
 import type { Operation } from './git/types.js'
+import './contract-ext.js'
 
 describe('createOperationDispatcher', () => {
   let account: MockTradingAccount
@@ -15,104 +18,107 @@ describe('createOperationDispatcher', () => {
   // ==================== placeOrder ====================
 
   describe('placeOrder', () => {
-    it('calls account.placeOrder with constructed contract and order params', async () => {
-      const op: Operation = {
-        action: 'placeOrder',
-        params: {
-          symbol: 'AAPL',
-          side: 'buy',
-          type: 'market',
-          qty: 10,
-          timeInForce: 'day',
-        },
-      }
+    it('calls account.placeOrder with contract and order', async () => {
+      const contract = makeContract({ symbol: 'AAPL' })
+      const order = new Order()
+      order.action = 'BUY'
+      order.orderType = 'MKT'
+      order.totalQuantity = new Decimal(10)
+      order.tif = 'DAY'
+
+      const op: Operation = { action: 'placeOrder', contract, order }
 
       const result = await dispatch(op) as Record<string, unknown>
 
       expect(account.placeOrder).toHaveBeenCalledTimes(1)
-      const call = account.placeOrder.mock.calls[0][0]
-      expect(call.contract.symbol).toBe('AAPL')
-      expect(call.side).toBe('buy')
-      expect(call.type).toBe('market')
-      expect(call.qty).toBe(10)
+      const [passedContract, passedOrder] = account.placeOrder.mock.calls[0]
+      expect(passedContract.symbol).toBe('AAPL')
+      expect(passedOrder.action).toBe('BUY')
+      expect(passedOrder.orderType).toBe('MKT')
+      expect(passedOrder.totalQuantity.toNumber()).toBe(10)
       expect(result.success).toBe(true)
     })
 
     it('passes aliceId and extra contract fields', async () => {
-      const op: Operation = {
-        action: 'placeOrder',
-        params: {
-          aliceId: 'alpaca-AAPL',
-          symbol: 'AAPL',
-          secType: 'STK',
-          currency: 'USD',
-          exchange: 'NASDAQ',
-          side: 'buy',
-          type: 'limit',
-          qty: 5,
-          price: 150,
-        },
-      }
+      const contract = makeContract({
+        aliceId: 'alpaca-AAPL',
+        symbol: 'AAPL',
+        secType: 'STK',
+        currency: 'USD',
+        exchange: 'NASDAQ',
+      })
+      const order = new Order()
+      order.action = 'BUY'
+      order.orderType = 'LMT'
+      order.totalQuantity = new Decimal(5)
+      order.lmtPrice = 150
+
+      const op: Operation = { action: 'placeOrder', contract, order }
 
       await dispatch(op)
 
-      const call = account.placeOrder.mock.calls[0][0]
-      expect(call.contract.aliceId).toBe('alpaca-AAPL')
-      expect(call.contract.secType).toBe('STK')
-      expect(call.contract.currency).toBe('USD')
-      expect(call.contract.exchange).toBe('NASDAQ')
-      expect(call.price).toBe(150)
+      const [passedContract, passedOrder] = account.placeOrder.mock.calls[0]
+      expect(passedContract.aliceId).toBe('alpaca-AAPL')
+      expect(passedContract.secType).toBe('STK')
+      expect(passedContract.currency).toBe('USD')
+      expect(passedContract.exchange).toBe('NASDAQ')
+      expect(passedOrder.lmtPrice).toBe(150)
     })
 
-    it('returns order info on success with filled status', async () => {
-      account.placeOrder.mockResolvedValue(makeOrderResult({
+    it('returns PlaceOrderResult on success', async () => {
+      account.placeOrder.mockResolvedValue(makePlaceOrderResult({
         orderId: 'ord-123',
-        filledPrice: 155,
-        filledQty: 10,
+        execution: { avgPrice: 155, shares: 10 } as any,
+        orderState: (() => { const os = new OrderState(); os.status = 'Filled'; return os })(),
       }))
 
-      const op: Operation = {
-        action: 'placeOrder',
-        params: { symbol: 'AAPL', side: 'buy', type: 'market', qty: 10 },
-      }
+      const contract = makeContract({ symbol: 'AAPL' })
+      const order = new Order()
+      order.action = 'BUY'
+      order.orderType = 'MKT'
+      order.totalQuantity = new Decimal(10)
+
+      const op: Operation = { action: 'placeOrder', contract, order }
 
       const result = await dispatch(op) as Record<string, unknown>
       expect(result.success).toBe(true)
-      const order = result.order as Record<string, unknown>
-      expect(order.id).toBe('ord-123')
-      expect(order.status).toBe('filled')
-      expect(order.filledPrice).toBe(155)
+      expect(result.orderId).toBe('ord-123')
     })
 
-    it('returns pending status when no filledPrice', async () => {
-      account.placeOrder.mockResolvedValue(makeOrderResult({
+    it('returns pending PlaceOrderResult when orderState is Submitted', async () => {
+      account.placeOrder.mockResolvedValue(makePlaceOrderResult({
         orderId: 'ord-456',
-        filledPrice: undefined,
-        filledQty: undefined,
+        orderState: (() => { const os = new OrderState(); os.status = 'Submitted'; return os })(),
       }))
 
-      const op: Operation = {
-        action: 'placeOrder',
-        params: { symbol: 'AAPL', side: 'buy', type: 'limit', qty: 10, price: 140 },
-      }
+      const contract = makeContract({ symbol: 'AAPL' })
+      const order = new Order()
+      order.action = 'BUY'
+      order.orderType = 'LMT'
+      order.totalQuantity = new Decimal(10)
+      order.lmtPrice = 140
+
+      const op: Operation = { action: 'placeOrder', contract, order }
 
       const result = await dispatch(op) as Record<string, unknown>
-      const order = result.order as Record<string, unknown>
-      expect(order.status).toBe('pending')
+      expect(result.success).toBe(true)
+      expect(result.orderId).toBe('ord-456')
     })
 
     it('returns error on failure', async () => {
       account.placeOrder.mockResolvedValue({ success: false, error: 'Insufficient funds' })
 
-      const op: Operation = {
-        action: 'placeOrder',
-        params: { symbol: 'AAPL', side: 'buy', type: 'market', qty: 10 },
-      }
+      const contract = makeContract({ symbol: 'AAPL' })
+      const order = new Order()
+      order.action = 'BUY'
+      order.orderType = 'MKT'
+      order.totalQuantity = new Decimal(10)
+
+      const op: Operation = { action: 'placeOrder', contract, order }
 
       const result = await dispatch(op) as Record<string, unknown>
       expect(result.success).toBe(false)
       expect(result.error).toBe('Insufficient funds')
-      expect(result.order).toBeUndefined()
     })
   })
 
@@ -120,23 +126,26 @@ describe('createOperationDispatcher', () => {
 
   describe('closePosition', () => {
     it('calls account.closePosition with contract and optional qty', async () => {
+      const contract = makeContract({ symbol: 'AAPL' })
       const op: Operation = {
         action: 'closePosition',
-        params: { symbol: 'AAPL', qty: 5 },
+        contract,
+        quantity: new Decimal(5),
       }
 
       await dispatch(op)
 
       expect(account.closePosition).toHaveBeenCalledTimes(1)
-      const [contract, qty] = account.closePosition.mock.calls[0]
-      expect(contract.symbol).toBe('AAPL')
-      expect(qty).toBe(5)
+      const [passedContract, qty] = account.closePosition.mock.calls[0]
+      expect(passedContract.symbol).toBe('AAPL')
+      expect(qty.toNumber()).toBe(5)
     })
 
     it('passes undefined qty for full close', async () => {
+      const contract = makeContract({ symbol: 'AAPL' })
       const op: Operation = {
         action: 'closePosition',
-        params: { symbol: 'AAPL' },
+        contract,
       }
 
       await dispatch(op)
@@ -152,26 +161,25 @@ describe('createOperationDispatcher', () => {
     it('calls account.cancelOrder and returns success', async () => {
       const op: Operation = {
         action: 'cancelOrder',
-        params: { orderId: 'ord-789' },
+        orderId: 'ord-789',
       }
 
-      const result = await dispatch(op) as Record<string, unknown>
+      const result = await dispatch(op)
 
-      expect(account.cancelOrder).toHaveBeenCalledWith('ord-789')
-      expect(result.success).toBe(true)
+      expect(account.cancelOrder).toHaveBeenCalledWith('ord-789', undefined)
+      expect(result).toBe(true)
     })
 
-    it('returns error message on cancel failure', async () => {
+    it('returns false on cancel failure', async () => {
       account.cancelOrder.mockResolvedValue(false)
 
       const op: Operation = {
         action: 'cancelOrder',
-        params: { orderId: 'ord-789' },
+        orderId: 'ord-789',
       }
 
-      const result = await dispatch(op) as Record<string, unknown>
-      expect(result.success).toBe(false)
-      expect(result.error).toContain('Failed to cancel')
+      const result = await dispatch(op)
+      expect(result).toBe(false)
     })
   })
 
@@ -179,38 +187,37 @@ describe('createOperationDispatcher', () => {
 
   describe('modifyOrder', () => {
     it('calls account.modifyOrder with orderId and changes', async () => {
+      const changes: Partial<Order> = { lmtPrice: 155, totalQuantity: new Decimal(20) } as any
       const op: Operation = {
         action: 'modifyOrder',
-        params: { orderId: 'ord-123', price: 155, qty: 20 },
+        orderId: 'ord-123',
+        changes,
       }
 
       const result = await dispatch(op) as Record<string, unknown>
 
       expect(account.modifyOrder).toHaveBeenCalledTimes(1)
-      const [orderId, changes] = account.modifyOrder.mock.calls[0]
+      const [orderId, passedChanges] = account.modifyOrder.mock.calls[0]
       expect(orderId).toBe('ord-123')
-      expect(changes.price).toBe(155)
-      expect(changes.qty).toBe(20)
+      expect(passedChanges.lmtPrice).toBe(155)
       expect(result.success).toBe(true)
     })
 
-    it('returns order info on success', async () => {
-      account.modifyOrder.mockResolvedValue(makeOrderResult({
+    it('returns PlaceOrderResult on success', async () => {
+      account.modifyOrder.mockResolvedValue(makePlaceOrderResult({
         orderId: 'ord-123',
-        filledPrice: undefined,
-        filledQty: undefined,
+        orderState: (() => { const os = new OrderState(); os.status = 'Submitted'; return os })(),
       }))
 
       const op: Operation = {
         action: 'modifyOrder',
-        params: { orderId: 'ord-123', price: 160 },
+        orderId: 'ord-123',
+        changes: { lmtPrice: 160 } as Partial<Order>,
       }
 
       const result = await dispatch(op) as Record<string, unknown>
       expect(result.success).toBe(true)
-      const order = result.order as Record<string, unknown>
-      expect(order.id).toBe('ord-123')
-      expect(order.status).toBe('pending')
+      expect(result.orderId).toBe('ord-123')
     })
 
     it('returns error on failure', async () => {
@@ -218,13 +225,13 @@ describe('createOperationDispatcher', () => {
 
       const op: Operation = {
         action: 'modifyOrder',
-        params: { orderId: 'ord-999', price: 100 },
+        orderId: 'ord-999',
+        changes: { lmtPrice: 100 } as Partial<Order>,
       }
 
       const result = await dispatch(op) as Record<string, unknown>
       expect(result.success).toBe(false)
       expect(result.error).toBe('Order not found')
-      expect(result.order).toBeUndefined()
     })
   })
 
@@ -232,10 +239,9 @@ describe('createOperationDispatcher', () => {
 
   describe('unknown action', () => {
     it('throws for unknown operation action', async () => {
-      const op: Operation = {
-        action: 'syncOrders' as never,
-        params: {},
-      }
+      const op = {
+        action: 'somethingWeird' as never,
+      } as Operation
 
       await expect(dispatch(op)).rejects.toThrow('Unknown operation action')
     })

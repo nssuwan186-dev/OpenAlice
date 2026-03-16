@@ -46,7 +46,10 @@ Use searchContracts first to get the aliceId.`,
         const resolved = resolveCcxtOne(source)
         if ('error' in resolved) return resolved
         const { account, id } = resolved
-        const result = await account.getFundingRate({ aliceId })
+        const { Contract } = await import('@traderalice/ibkr')
+        const contract = new Contract()
+        contract.aliceId = aliceId
+        const result = await account.getFundingRate(contract)
         return { source: id, ...result }
       },
     }),
@@ -72,7 +75,10 @@ Use searchContracts first to get the aliceId.`,
         const resolved = resolveCcxtOne(source)
         if ('error' in resolved) return resolved
         const { account, id } = resolved
-        const result = await account.getOrderBook({ aliceId }, limit ?? 20)
+        const { Contract } = await import('@traderalice/ibkr')
+        const contract = new Contract()
+        contract.aliceId = aliceId
+        const result = await account.getOrderBook(contract, limit ?? 20)
         return { source: id, ...result }
       },
     }),

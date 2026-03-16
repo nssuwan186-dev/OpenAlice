@@ -5,8 +5,9 @@
  * like aggregated equity and global contract search.
  */
 
-import type { Contract, ContractDescription, ContractDetails } from './contract.js'
+import type { Contract, ContractDescription, ContractDetails } from '@traderalice/ibkr'
 import type { ITradingAccount, AccountCapabilities } from './interfaces.js'
+import './contract-ext.js'
 
 // ==================== Account entry ====================
 
@@ -120,15 +121,15 @@ export class AccountManager {
 
     for (const { id, label, info } of results) {
       if (!info) continue
-      totalEquity += info.equity
-      totalCash += info.cash
+      totalEquity += info.netLiquidation
+      totalCash += info.totalCashValue
       totalUnrealizedPnL += info.unrealizedPnL
       totalRealizedPnL += info.realizedPnL
       accounts.push({
         id,
         label,
-        equity: info.equity,
-        cash: info.cash,
+        equity: info.netLiquidation,
+        cash: info.totalCashValue,
         unrealizedPnL: info.unrealizedPnL,
       })
     }
@@ -164,7 +165,7 @@ export class AccountManager {
    * Get full contract details from a specific account (IBKR: reqContractDetails).
    */
   async getContractDetails(
-    query: Partial<Contract>,
+    query: Contract,
     accountId: string,
   ): Promise<ContractDetails | null> {
     const entry = this.entries.get(accountId)

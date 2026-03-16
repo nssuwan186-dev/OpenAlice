@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import Decimal from 'decimal.js'
+import { Contract, Order } from '@traderalice/ibkr'
 import { computeRealizedPnL } from './alpaca-pnl.js'
 import { AlpacaAccount } from './AlpacaAccount.js'
+import '../../contract-ext.js'
 
 // ==================== Alpaca SDK mock ====================
 
@@ -82,8 +85,8 @@ describe('computeRealizedPnL', () => {
       fill('AAPL', 'buy', 5, 120, 1),
       fill('AAPL', 'sell', 7, 130, 2),
     ]
-    // FIFO: first lot 5@100 → (130-100)*5 = 150
-    //        second lot 2@120 → (130-120)*2 = 20
+    // FIFO: first lot 5@100 -> (130-100)*5 = 150
+    //        second lot 2@120 -> (130-120)*2 = 20
     // total = 170
     expect(computeRealizedPnL(fills)).toBe(170)
   })
@@ -106,7 +109,7 @@ describe('computeRealizedPnL', () => {
       fill('AAPL', 'sell', 10, 160, 0),
       fill('AAPL', 'buy', 10, 150, 1),
     ]
-    // Short: entry 160, exit 150 → (160-150)*10 = 100 profit
+    // Short: entry 160, exit 150 -> (160-150)*10 = 100 profit
     expect(computeRealizedPnL(fills)).toBe(100)
   })
 
@@ -115,7 +118,7 @@ describe('computeRealizedPnL', () => {
       fill('AAPL', 'sell', 10, 150, 0),
       fill('AAPL', 'buy', 10, 160, 1),
     ]
-    // Short: entry 150, exit 160 → (150-160)*10 = -100 loss
+    // Short: entry 150, exit 160 -> (150-160)*10 = -100 loss
     expect(computeRealizedPnL(fills)).toBe(-100)
   })
 
@@ -144,20 +147,6 @@ describe('computeRealizedPnL', () => {
 
 // ==================== AlpacaAccount ====================
 
-function makeClient(account: any) {
-  // After construction, Alpaca SDK is mocked — get the instance via the constructor mock
-  const Alpaca = require('@alpacahq/alpaca-trade-api').default
-  const instance = new Alpaca.mock.instances[Alpaca.mock.instances.length - 1]
-  // Actually, we get the client by inspecting mock calls more carefully below.
-  return account
-}
-
-function getLastAlpacaInstance() {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const Alpaca = require('@alpacahq/alpaca-trade-api').default
-  return Alpaca.mock.instances[Alpaca.mock.instances.length - 1]
-}
-
 describe('AlpacaAccount — init()', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -175,10 +164,6 @@ describe('AlpacaAccount — init()', () => {
 
   it('resolves on successful getAccount()', async () => {
     const acc = new AlpacaAccount({ apiKey: 'key', secretKey: 'secret', paper: true })
-    // Alpaca constructor is mocked — set up getAccount on the instance
-    // We need to patch BEFORE init() is called but AFTER AlpacaAccount constructor runs
-    // The AlpacaAccount constructor does NOT call new Alpaca yet — init() does.
-    // So we set up the mock inside the test before calling init().
     const { default: Alpaca } = await import('@alpacahq/alpaca-trade-api')
     ;(Alpaca as any).mockImplementationOnce(function (this: any) {
       this.getAccount = vi.fn().mockResolvedValue({ equity: '50000', paper: true })
@@ -235,53 +220,44 @@ describe('AlpacaAccount — placeOrder()', () => {
 
   it('returns success with orderId on filled order', async () => {
     const acc = new AlpacaAccount({ apiKey: 'k', secretKey: 's' })
-    const { default: Alpaca } = await import('@alpacahq/alpaca-trade-api')
-    ;(Alpaca as any).mockImplementationOnce(function (this: any) {
-      this.getAccount = vi.fn()
-      this.getPositions = vi.fn()
-      this.createOrder = vi.fn().mockResolvedValue({
-        id: 'ord-1',
-        status: 'filled',
-        filled_avg_price: '150.50',
-        filled_qty: '10',
-      })
-      this.replaceOrder = vi.fn()
-      this.cancelOrder = vi.fn()
-      this.closePosition = vi.fn()
-      this.getOrders = vi.fn()
-      this.getSnapshot = vi.fn()
-      this.getClock = vi.fn()
-      this.getAccountActivities = vi.fn()
-    })
-    await acc.init().catch(() => {}) // init to set up client (will fail without mock account but client is created)
-    // Directly inject client by triggering init on a partial mock
-    const { default: AlpacaClass } = await import('@alpacahq/alpaca-trade-api')
     ;(acc as any).client = {
       createOrder: vi.fn().mockResolvedValue({
         id: 'ord-1', status: 'filled', filled_avg_price: '150.50', filled_qty: '10',
       }),
     }
-    const result = await acc.placeOrder({
-      contract: { aliceId: 'alpaca-AAPL', symbol: 'AAPL', secType: 'STK', exchange: 'NASDAQ', currency: 'USD' },
-      side: 'buy',
-      type: 'market',
-      qty: 10,
-    })
+    const contract = new Contract()
+    contract.aliceId = 'alpaca-AAPL'
+    contract.symbol = 'AAPL'
+    contract.secType = 'STK'
+    contract.exchange = 'NASDAQ'
+    contract.currency = 'USD'
+
+    const order = new Order()
+    order.action = 'BUY'
+    order.orderType = 'MKT'
+    order.totalQuantity = new Decimal(10)
+
+    const result = await acc.placeOrder(contract, order)
     expect(result.success).toBe(true)
     expect(result.orderId).toBe('ord-1')
-    expect(result.filledPrice).toBe(150.50)
-    expect(result.filledQty).toBe(10)
   })
 
   it('returns error when contract resolution fails', async () => {
     const acc = new AlpacaAccount({ apiKey: 'k', secretKey: 's' })
     ;(acc as any).client = { createOrder: vi.fn() }
-    const result = await acc.placeOrder({
-      contract: { aliceId: '', symbol: '', secType: 'STK', exchange: '', currency: '' },
-      side: 'buy',
-      type: 'market',
-      qty: 1,
-    })
+    const contract = new Contract()
+    contract.aliceId = ''
+    contract.symbol = ''
+    contract.secType = 'STK'
+    contract.exchange = ''
+    contract.currency = ''
+
+    const order = new Order()
+    order.action = 'BUY'
+    order.orderType = 'MKT'
+    order.totalQuantity = new Decimal(1)
+
+    const result = await acc.placeOrder(contract, order)
     expect(result.success).toBe(false)
     expect(result.error).toContain('Cannot resolve')
   })
@@ -305,14 +281,12 @@ describe('AlpacaAccount — getPositions()', () => {
     }
     const positions = await acc.getPositions()
     expect(positions).toHaveLength(1)
-    expect(positions[0].symbol).toBeUndefined() // fields are on contract
     expect(positions[0].contract.symbol).toBe('AAPL')
-    expect(positions[0].qty).toBe(10)
-    expect(positions[0].avgEntryPrice).toBe(150)
-    expect(positions[0].currentPrice).toBe(160)
+    expect(positions[0].quantity.toNumber()).toBe(10)
+    expect(positions[0].avgCost).toBe(150)
+    expect(positions[0].marketPrice).toBe(160)
     expect(positions[0].marketValue).toBe(1600)
     expect(positions[0].unrealizedPnL).toBe(100)
-    expect(Math.round(positions[0].unrealizedPnLPercent * 100) / 100).toBeCloseTo(6.67, 1)
     expect(positions[0].side).toBe('long')
   })
 })

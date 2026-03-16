@@ -7,6 +7,7 @@
  */
 
 import type { ITradingAccount } from './interfaces.js'
+import './contract-ext.js'
 
 /** Credentials passed to IPlatform.createAccount(). */
 export interface PlatformCredentials {

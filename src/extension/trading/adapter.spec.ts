@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { Contract, ContractDescription } from '@traderalice/ibkr'
 import { resolveAccounts, resolveOne, createTradingTools } from './adapter.js'
 import { AccountManager } from './account-manager.js'
 import { MockTradingAccount, makePosition, makeContract } from './__test__/mock-account.js'
+import './contract-ext.js'
 
 // ==================== Helpers ====================
 
@@ -117,8 +119,12 @@ describe('createTradingTools — searchContracts', () => {
   it('aggregates results from all accounts', async () => {
     const a1 = new MockTradingAccount({ id: 'acc1', provider: 'alpaca' })
     const a2 = new MockTradingAccount({ id: 'acc2', provider: 'ccxt' })
-    a1.searchContracts.mockResolvedValue([{ contract: makeContract({ symbol: 'AAPL' }) }])
-    a2.searchContracts.mockResolvedValue([{ contract: makeContract({ symbol: 'AAPL' }) }])
+    const desc1 = new ContractDescription()
+    desc1.contract = makeContract({ symbol: 'AAPL' })
+    const desc2 = new ContractDescription()
+    desc2.contract = makeContract({ symbol: 'AAPL' })
+    a1.searchContracts.mockResolvedValue([desc1])
+    a2.searchContracts.mockResolvedValue([desc2])
     const mgr = makeManager(a1, a2)
     const tools = createTradingTools(makeResolver(mgr))
     const result = await (tools.searchContracts.execute as Function)({ pattern: 'AAPL' })
@@ -149,7 +155,9 @@ describe('createTradingTools — searchContracts', () => {
     const a1 = new MockTradingAccount({ id: 'acc1' })
     const a2 = new MockTradingAccount({ id: 'acc2' })
     a1.searchContracts.mockRejectedValue(new Error('connection error'))
-    a2.searchContracts.mockResolvedValue([{ contract: makeContract({ symbol: 'BTC' }) }])
+    const desc = new ContractDescription()
+    desc.contract = makeContract({ symbol: 'BTC' })
+    a2.searchContracts.mockResolvedValue([desc])
     const mgr = makeManager(a1, a2)
     const tools = createTradingTools(makeResolver(mgr))
     const result = await (tools.searchContracts.execute as Function)({ pattern: 'BTC' })

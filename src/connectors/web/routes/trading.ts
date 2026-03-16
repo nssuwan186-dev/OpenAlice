@@ -83,8 +83,10 @@ export function createTradingRoutes(ctx: EngineContext) {
     const account = ctx.accountManager.getAccount(c.req.param('id'))
     if (!account) return c.json({ error: 'Account not found' }, 404)
     try {
-      const symbol = c.req.param('symbol')
-      const quote = await account.getQuote({ symbol })
+      const { Contract } = await import('@traderalice/ibkr')
+      const contract = new Contract()
+      contract.symbol = c.req.param('symbol')
+      const quote = await account.getQuote(contract)
       return c.json(quote)
     } catch (err) {
       return c.json({ error: String(err) }, 500)

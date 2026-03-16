@@ -6,16 +6,39 @@
  * Staging mutations (placeOrder, closePosition, cancelOrder) require explicit `source`.
  * Git-flow mutations (tradingCommit, tradingPush, tradingSync) default to all accounts.
  *
- * Replaces the old per-account `createTradingTools(account, git)` pattern
- * and the separate `git/adapter.ts`.
+ * AI tool inputs → IBKR Order/Contract objects → git.add() staging.
  */
 
 import { tool } from 'ai'
 import { z } from 'zod'
+import Decimal from 'decimal.js'
+import { Contract, Order } from '@traderalice/ibkr'
 import type { AccountManager } from './account-manager.js'
 import type { ITradingAccount } from './interfaces.js'
 import type { ITradingGit } from './git/interfaces.js'
 import type { GitState, OrderStatusUpdate } from './git/types.js'
+import './contract-ext.js'
+
+// ==================== IBKR field mapping ====================
+
+/** Map human-readable order type → IBKR short code. */
+function toIbkrOrderType(type: string): string {
+  switch (type) {
+    case 'market': return 'MKT'
+    case 'limit': return 'LMT'
+    case 'stop': return 'STP'
+    case 'stop_limit': return 'STP LMT'
+    case 'trailing_stop': return 'TRAIL'
+    case 'trailing_stop_limit': return 'TRAIL LIMIT'
+    case 'moc': return 'MOC'
+    default: return type.toUpperCase()
+  }
+}
+
+/** Map human-readable TIF → IBKR short code. */
+function toIbkrTif(tif: string): string {
+  return tif.toUpperCase() // day→DAY, gtc→GTC, ioc→IOC, etc.
+}
 
 // ==================== Resolver interface ====================
 
@@ -169,7 +192,7 @@ equityGetProfile for that.`,
       execute: async ({ source, symbol, aliceId, secType, currency }) => {
         const { account, id } = resolveOne(accountManager, source)
 
-        const query: Record<string, unknown> = {}
+        const query = new Contract()
         if (symbol) query.symbol = symbol
         if (aliceId) query.aliceId = aliceId
         if (secType) query.secType = secType
@@ -185,7 +208,7 @@ equityGetProfile for that.`,
 
     getAccount: tool({
       description:
-        'Query trading account info (cash, portfolioValue, equity, buyingPower, unrealizedPnL, realizedPnL, dayTradeCount).',
+        'Query trading account info (netLiquidation, totalCashValue, buyingPower, unrealizedPnL, realizedPnL).',
       inputSchema: z.object({
         source: z.string().optional().describe(sourceDesc(false)),
       }),
@@ -209,12 +232,9 @@ equityGetProfile for that.`,
       description: `Query current portfolio holdings.
 
 Each holding includes:
-- symbol, side, qty, avgEntryPrice, currentPrice
+- symbol, side, quantity, avgCost, marketPrice
 - marketValue: Current market value
-- unrealizedPnL / unrealizedPnLPercent: Unrealized profit/loss
-- costBasis: Total cost basis
-- percentageOfEquity: This holding's value as percentage of total equity
-- percentageOfPortfolio: This holding's value as percentage of total portfolio
+- unrealizedPnL: Unrealized profit/loss
 
 IMPORTANT: If result is an empty array [], you have no holdings.`,
       inputSchema: z.object({
@@ -240,7 +260,7 @@ IMPORTANT: If result is an empty array [], you have no holdings.`,
             if (symbol && symbol !== 'all' && pos.contract.symbol !== symbol) continue
 
             const percentOfEquity =
-              accountInfo.equity > 0 ? (pos.marketValue / accountInfo.equity) * 100 : 0
+              accountInfo.netLiquidation > 0 ? (pos.marketValue / accountInfo.netLiquidation) * 100 : 0
             const percentOfPortfolio =
               totalMarketValue > 0 ? (pos.marketValue / totalMarketValue) * 100 : 0
 
@@ -248,13 +268,12 @@ IMPORTANT: If result is an empty array [], you have no holdings.`,
               source: id,
               symbol: pos.contract.symbol,
               side: pos.side,
-              qty: pos.qty,
-              avgEntryPrice: pos.avgEntryPrice,
-              currentPrice: pos.currentPrice,
+              quantity: pos.quantity.toNumber(),
+              avgCost: pos.avgCost,
+              marketPrice: pos.marketPrice,
               marketValue: pos.marketValue,
               unrealizedPnL: pos.unrealizedPnL,
-              unrealizedPnLPercent: pos.unrealizedPnLPercent,
-              costBasis: pos.costBasis,
+              realizedPnL: pos.realizedPnL,
               leverage: pos.leverage,
               margin: pos.margin,
               liquidationPrice: pos.liquidationPrice,
@@ -311,10 +330,13 @@ Use searchContracts first to get the aliceId, then pass it here.`,
         const targets = resolveAccounts(accountManager, source)
         if (targets.length === 0) return { error: 'No accounts available.' }
 
+        const query = new Contract()
+        query.aliceId = aliceId
+
         const results: Array<Record<string, unknown>> = []
         for (const { account, id } of targets) {
           try {
-            const quote = await account.getQuote({ aliceId })
+            const quote = await account.getQuote(query)
             results.push({ source: id, ...quote })
           } catch {
             // Skip accounts that don't support this contract
@@ -358,29 +380,11 @@ IMPORTANT: Check this BEFORE making new trading decisions to:
 - Avoid contradicting your own strategy
 - Maintain consistency across rounds
 
-Returns recent trading commits in reverse chronological order (newest first).
-Each commit includes:
-- hash: Unique commit identifier
-- message: Your explanation for the trades
-- operations: Summary of each operation (symbol, action, change, status)
-- timestamp: When the commit was made
-
-Use symbol parameter to filter commits for a specific ticker.
-Use tradingShow(hash) for full details of a specific commit.`,
+Returns recent trading commits in reverse chronological order (newest first).`,
       inputSchema: z.object({
         source: z.string().optional().describe(sourceDesc(false)),
-        limit: z
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe('Number of recent commits to return (default: 10)'),
-        symbol: z
-          .string()
-          .optional()
-          .describe(
-            'Filter commits by symbol (e.g., "AAPL"). Only shows commits that affected this symbol.',
-          ),
+        limit: z.number().int().positive().optional().describe('Number of recent commits (default: 10)'),
+        symbol: z.string().optional().describe('Filter commits by symbol'),
       }),
       execute: ({ source, limit, symbol }) => {
         const targets = resolveAccounts(accountManager, source)
@@ -396,7 +400,6 @@ Use tradingShow(hash) for full details of a specific commit.`,
           }
         }
 
-        // Sort by timestamp descending
         allEntries.sort((a, b) => {
           const ta = new Date(a.timestamp as string).getTime()
           const tb = new Date(b.timestamp as string).getTime()
@@ -407,22 +410,14 @@ Use tradingShow(hash) for full details of a specific commit.`,
       },
     }),
 
-    // ==================== Trading Show (query, auto-match by hash) ====================
+    // ==================== Trading Show ====================
 
     tradingShow: tool({
-      description: `View details of a specific trading commit (like "git show <hash>").
-
-Returns full commit information including:
-- All operations that were executed
-- Results of each operation (filled price, qty, errors)
-- Account state after the commit (holdings, cash)
-
-Use this to inspect what happened in a specific trading commit.`,
+      description: `View details of a specific trading commit (like "git show <hash>").`,
       inputSchema: z.object({
         hash: z.string().describe('Commit hash to inspect (8 characters)'),
       }),
       execute: ({ hash }) => {
-        // Search all gits for the hash
         const summaries = accountManager.listAccounts()
         for (const s of summaries) {
           const git = resolver.getGit(s.id)
@@ -434,18 +429,10 @@ Use this to inspect what happened in a specific trading commit.`,
       },
     }),
 
-    // ==================== Trading Status (query, aggregatable) ====================
+    // ==================== Trading Status ====================
 
     tradingStatus: tool({
-      description: `View current trading staging area status (like "git status").
-
-Returns:
-- staged: List of operations waiting to be committed/pushed
-- pendingMessage: Commit message if already committed but not pushed
-- head: Hash of the latest commit
-- commitCount: Total number of commits in history
-
-Use this to check if you have pending operations before making more trades.`,
+      description: `View current trading staging area status (like "git status").`,
       inputSchema: z.object({
         source: z.string().optional().describe(sourceDesc(false)),
       }),
@@ -463,40 +450,19 @@ Use this to check if you have pending operations before making more trades.`,
       },
     }),
 
-    // ==================== Simulate Price Change (query, aggregatable) ====================
+    // ==================== Simulate Price Change ====================
 
     simulatePriceChange: tool({
       description: `Simulate price changes to see portfolio impact BEFORE making decisions (dry run).
-
-Use this tool to:
-- See how much you would lose if a stock drops
-- Understand the impact of market movements on your portfolio
-- Make informed decisions about position sizing
-
-Price change syntax:
-- Absolute: "@150" means price becomes $150
-- Relative: "+10%" means price increases by 10%, "-5%" means price decreases by 5%
-
-You can simulate changes for:
-- A specific symbol: { symbol: "AAPL", change: "@150" }
-- All holdings: { symbol: "all", change: "-10%" }
 
 IMPORTANT: This is READ-ONLY - it does NOT modify your actual holdings.`,
       inputSchema: z.object({
         source: z.string().optional().describe(sourceDesc(false)),
         priceChanges: z
-          .array(
-            z.object({
-              symbol: z
-                .string()
-                .describe('Ticker (e.g., "AAPL") or "all" for all holdings'),
-              change: z
-                .string()
-                .describe(
-                  'Price change: "@150" for absolute, "+10%" or "-5%" for relative',
-                ),
-            }),
-          )
+          .array(z.object({
+            symbol: z.string().describe('Ticker or "all"'),
+            change: z.string().describe('"@150" for absolute, "+10%" or "-5%" for relative'),
+          }))
           .describe('Array of price changes to simulate'),
       }),
       execute: async ({ source, priceChanges }) => {
@@ -534,114 +500,54 @@ NOTE: This stages the operation. Call tradingCommit + tradingPush to execute.`,
       inputSchema: z.object({
         source: z.string().describe(sourceDesc(true)),
         aliceId: z.string().describe('Contract identifier from searchContracts (e.g. "alpaca-AAPL", "bybit-BTCUSDT")'),
-        symbol: z.string().optional().describe('Human-readable symbol for logging (e.g. "AAPL", "BTC"). Optional — extracted from aliceId if omitted.'),
+        symbol: z.string().optional().describe('Human-readable symbol for logging. Optional.'),
         side: z.enum(['buy', 'sell']).describe('Buy or sell'),
         type: z
           .enum(['market', 'limit', 'stop', 'stop_limit', 'trailing_stop', 'trailing_stop_limit', 'moc'])
           .describe('Order type'),
-        qty: z
-          .number()
-          .positive()
-          .optional()
-          .describe(
-            'Number of shares (supports fractional). Mutually exclusive with notional.',
-          ),
-        notional: z
-          .number()
-          .positive()
-          .optional()
-          .describe(
-            'Dollar amount to invest (e.g. 1000 = $1000 of the stock). Mutually exclusive with qty.',
-          ),
-        price: z
-          .number()
-          .positive()
-          .optional()
-          .describe('Limit price (required for limit and stop_limit orders)'),
-        stopPrice: z
-          .number()
-          .positive()
-          .optional()
-          .describe(
-            'Stop trigger price (required for stop and stop_limit orders)',
-          ),
-        trailingAmount: z
-          .number()
-          .positive()
-          .optional()
-          .describe('Trailing stop absolute offset in dollars (for trailing_stop/trailing_stop_limit)'),
-        trailingPercent: z
-          .number()
-          .positive()
-          .optional()
-          .describe('Trailing stop percentage (for trailing_stop/trailing_stop_limit)'),
-        reduceOnly: z
-          .boolean()
-          .optional()
-          .describe('Only reduce position (close only)'),
-        timeInForce: z
-          .enum(['day', 'gtc', 'ioc', 'fok', 'opg', 'gtd'])
-          .default('day')
-          .describe('Time in force (default: day)'),
-        goodTillDate: z
-          .string()
-          .optional()
-          .describe('Expiration date for GTD orders (ISO date string)'),
-        extendedHours: z
-          .boolean()
-          .optional()
-          .describe('Allow pre-market and after-hours trading'),
-        parentId: z
-          .string()
-          .optional()
-          .describe('Parent order ID for bracket orders (child references parent)'),
-        ocaGroup: z
-          .string()
-          .optional()
-          .describe('One-Cancels-All group name'),
+        qty: z.number().positive().optional().describe('Number of shares. Mutually exclusive with notional.'),
+        notional: z.number().positive().optional().describe('Dollar amount. Mutually exclusive with qty.'),
+        price: z.number().positive().optional().describe('Limit price'),
+        stopPrice: z.number().positive().optional().describe('Stop trigger price'),
+        trailingAmount: z.number().positive().optional().describe('Trailing stop offset in dollars'),
+        trailingPercent: z.number().positive().optional().describe('Trailing stop percentage'),
+        timeInForce: z.enum(['day', 'gtc', 'ioc', 'fok', 'opg', 'gtd']).default('day').describe('Time in force'),
+        goodTillDate: z.string().optional().describe('Expiration date for GTD orders'),
+        extendedHours: z.boolean().optional().describe('Allow pre-market and after-hours'),
+        parentId: z.string().optional().describe('Parent order ID for bracket orders'),
+        ocaGroup: z.string().optional().describe('One-Cancels-All group name'),
       }),
       execute: ({
-        source,
-        aliceId,
-        symbol,
-        side,
-        type,
-        qty,
-        notional,
-        price,
-        stopPrice,
-        trailingAmount,
-        trailingPercent,
-        reduceOnly,
-        timeInForce,
-        goodTillDate,
-        extendedHours,
-        parentId,
-        ocaGroup,
+        source, aliceId, symbol, side, type, qty, notional,
+        price, stopPrice, trailingAmount, trailingPercent,
+        timeInForce, goodTillDate, extendedHours, parentId, ocaGroup,
       }) => {
         const { id } = resolveOne(accountManager, source)
         const git = requireGit(resolver, id)
-        return git.add({
-          action: 'placeOrder',
-          params: {
-            aliceId,
-            symbol,
-            side,
-            type,
-            qty,
-            notional,
-            price,
-            stopPrice,
-            trailingAmount,
-            trailingPercent,
-            reduceOnly,
-            timeInForce,
-            goodTillDate,
-            extendedHours,
-            parentId,
-            ocaGroup,
-          },
-        })
+
+        // Build IBKR Contract
+        const contract = new Contract()
+        contract.aliceId = aliceId
+        if (symbol) contract.symbol = symbol
+
+        // Build IBKR Order
+        const order = new Order()
+        order.action = side === 'buy' ? 'BUY' : 'SELL'
+        order.orderType = toIbkrOrderType(type)
+        order.tif = toIbkrTif(timeInForce)
+
+        if (qty != null) order.totalQuantity = new Decimal(qty)
+        if (notional != null) order.cashQty = notional
+        if (price != null) order.lmtPrice = price
+        if (stopPrice != null) order.auxPrice = stopPrice
+        if (trailingAmount != null) order.auxPrice = trailingAmount
+        if (trailingPercent != null) order.trailingPercent = trailingPercent
+        if (goodTillDate != null) order.goodTillDate = goodTillDate
+        if (extendedHours) order.outsideRth = true
+        if (parentId != null) order.parentId = parseInt(parentId, 10) || 0
+        if (ocaGroup != null) order.ocaGroup = ocaGroup
+
+        return git.add({ action: 'placeOrder', contract, order })
       },
     }),
 
@@ -649,9 +555,6 @@ NOTE: This stages the operation. Call tradingCommit + tradingPush to execute.`,
 
     modifyOrder: tool({
       description: `Stage an order modification (will execute on tradingPush).
-
-Modifies an existing pending order's price, quantity, or other parameters without cancelling and re-placing.
-IBKR-style replace semantics: the order keeps its ID but parameters change.
 
 NOTE: This stages the operation. Call tradingCommit + tradingPush to execute.`,
       inputSchema: z.object({
@@ -666,19 +569,24 @@ NOTE: This stages the operation. Call tradingCommit + tradingPush to execute.`,
           .enum(['market', 'limit', 'stop', 'stop_limit', 'trailing_stop', 'trailing_stop_limit', 'moc'])
           .optional()
           .describe('New order type'),
-        timeInForce: z
-          .enum(['day', 'gtc', 'ioc', 'fok', 'opg', 'gtd'])
-          .optional()
-          .describe('New time in force'),
-        goodTillDate: z.string().optional().describe('New expiration date for GTD orders'),
+        timeInForce: z.enum(['day', 'gtc', 'ioc', 'fok', 'opg', 'gtd']).optional().describe('New time in force'),
+        goodTillDate: z.string().optional().describe('New expiration date'),
       }),
-      execute: ({ source, orderId, ...changes }) => {
+      execute: ({ source, orderId, qty, price, stopPrice, trailingAmount, trailingPercent, type, timeInForce, goodTillDate }) => {
         const { id } = resolveOne(accountManager, source)
         const git = requireGit(resolver, id)
-        return git.add({
-          action: 'modifyOrder',
-          params: { orderId, ...changes },
-        })
+
+        const changes: Partial<Order> = {}
+        if (qty != null) changes.totalQuantity = new Decimal(qty)
+        if (price != null) changes.lmtPrice = price
+        if (stopPrice != null) changes.auxPrice = stopPrice
+        if (trailingAmount != null) changes.auxPrice = trailingAmount
+        if (trailingPercent != null) changes.trailingPercent = trailingPercent
+        if (type != null) changes.orderType = toIbkrOrderType(type)
+        if (timeInForce != null) changes.tif = toIbkrTif(timeInForce)
+        if (goodTillDate != null) changes.goodTillDate = goodTillDate
+
+        return git.add({ action: 'modifyOrder', orderId, changes })
       },
     }),
 
@@ -687,25 +595,25 @@ NOTE: This stages the operation. Call tradingCommit + tradingPush to execute.`,
     closePosition: tool({
       description: `Stage a position close (will execute on tradingPush).
 
-This is the preferred way to sell holdings instead of using placeOrder with side="sell".
-
 NOTE: This stages the operation. Call tradingCommit + tradingPush to execute.`,
       inputSchema: z.object({
         source: z.string().describe(sourceDesc(true)),
-        aliceId: z.string().describe('Contract identifier from searchContracts or getPortfolio (e.g. "alpaca-AAPL")'),
-        symbol: z.string().optional().describe('Human-readable symbol for logging. Optional.'),
-        qty: z
-          .number()
-          .positive()
-          .optional()
-          .describe('Number of shares to sell (default: sell all)'),
+        aliceId: z.string().describe('Contract identifier'),
+        symbol: z.string().optional().describe('Human-readable symbol. Optional.'),
+        qty: z.number().positive().optional().describe('Number of shares to sell (default: sell all)'),
       }),
       execute: ({ source, aliceId, symbol, qty }) => {
         const { id } = resolveOne(accountManager, source)
         const git = requireGit(resolver, id)
+
+        const contract = new Contract()
+        contract.aliceId = aliceId
+        if (symbol) contract.symbol = symbol
+
         return git.add({
           action: 'closePosition',
-          params: { aliceId, symbol, qty },
+          contract,
+          quantity: qty != null ? new Decimal(qty) : undefined,
         })
       },
     }),
@@ -723,35 +631,19 @@ NOTE: This stages the operation. Call tradingCommit + tradingPush to execute.`,
       execute: ({ source, orderId }) => {
         const { id } = resolveOne(accountManager, source)
         const git = requireGit(resolver, id)
-        return git.add({
-          action: 'cancelOrder',
-          params: { orderId },
-        })
+        return git.add({ action: 'cancelOrder', orderId })
       },
     }),
 
-    // ==================== Trading Commit (source optional — commits all if omitted) ====================
+    // ==================== Trading Commit ====================
 
     tradingCommit: tool({
       description: `Commit staged trading operations with a message (like "git commit -m").
 
-After staging operations with placeOrder/closePosition/etc., use this to:
-1. Add a commit message explaining WHY you're making these trades
-2. Prepare the operations for execution
-
-This does NOT execute the trades yet - call tradingPush after this.
-
-If source is omitted, commits ALL accounts that have staged operations.
-
-Example workflow:
-1. placeOrder({ source: "alpaca", symbol: "AAPL", side: "buy", ... }) -> staged
-2. tradingCommit({ message: "Buying AAPL on strong earnings beat" })
-3. tradingPush() -> executes and records`,
+This does NOT execute the trades yet - call tradingPush after this.`,
       inputSchema: z.object({
         source: z.string().optional().describe(sourceDesc(false, 'If omitted, commits all accounts with staged operations.')),
-        message: z
-          .string()
-          .describe('Commit message explaining your trading decision'),
+        message: z.string().describe('Commit message explaining your trading decision'),
       }),
       execute: ({ source, message }) => {
         const targets = resolveAccounts(accountManager, source)
@@ -770,18 +662,10 @@ Example workflow:
       },
     }),
 
-    // ==================== Trading Push (source optional — pushes all if omitted) ====================
+    // ==================== Trading Push ====================
 
     tradingPush: tool({
       description: `Execute all committed trading operations (like "git push").
-
-After staging operations and committing them, use this to:
-1. Execute all staged operations against the broker
-2. Record the commit with results to trading history
-
-Returns execution results for each operation (filled/pending/rejected).
-
-If source is omitted, pushes ALL accounts that have committed operations.
 
 IMPORTANT: You must call tradingCommit first before pushing.`,
       inputSchema: z.object({
@@ -805,15 +689,10 @@ IMPORTANT: You must call tradingCommit first before pushing.`,
       },
     }),
 
-    // ==================== Trading Sync (source optional — syncs all if omitted) ====================
+    // ==================== Trading Sync ====================
 
     tradingSync: tool({
       description: `Sync pending order statuses from broker (like "git pull").
-
-Checks all pending orders from previous commits and fetches their latest
-status from the broker. Creates a sync commit recording any changes.
-
-If source is omitted, syncs ALL accounts that have pending orders.
 
 Use this after placing limit/stop orders to check if they've been filled.`,
       inputSchema: z.object({
@@ -836,18 +715,16 @@ Use this after placing limit/stop orders to check if they've been filled.`,
           const updates: OrderStatusUpdate[] = []
 
           for (const { orderId, symbol } of pendingOrders) {
-            const brokerOrder = brokerOrders.find((o) => o.id === orderId)
+            const brokerOrder = brokerOrders.find((o) => String(o.order.orderId) === orderId || o.order.permId === parseInt(orderId, 10))
             if (!brokerOrder) continue
 
-            const newStatus = brokerOrder.status
-            if (newStatus !== 'pending') {
+            const status = brokerOrder.orderState.status
+            if (status !== 'Submitted' && status !== 'PreSubmitted') {
               updates.push({
                 orderId,
                 symbol,
                 previousStatus: 'pending',
-                currentStatus: newStatus,
-                filledPrice: brokerOrder.filledPrice,
-                filledQty: brokerOrder.filledQty,
+                currentStatus: status === 'Filled' ? 'filled' : status === 'Cancelled' ? 'cancelled' : 'rejected',
               })
             }
           }

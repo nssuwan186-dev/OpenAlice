@@ -17,12 +17,12 @@ export function createWalletStateBridge(account: ITradingAccount) {
     ])
 
     return {
-      cash: accountInfo.cash,
-      equity: accountInfo.equity,
+      netLiquidation: accountInfo.netLiquidation,
+      totalCashValue: accountInfo.totalCashValue,
       unrealizedPnL: accountInfo.unrealizedPnL,
       realizedPnL: accountInfo.realizedPnL,
       positions,
-      pendingOrders: orders.filter(o => o.status === 'pending'),
+      pendingOrders: orders.filter(o => o.orderState.status === 'Submitted' || o.orderState.status === 'PreSubmitted'),
     }
   }
 }

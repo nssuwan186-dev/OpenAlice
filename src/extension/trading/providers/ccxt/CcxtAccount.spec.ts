@@ -6,6 +6,8 @@
  * placeOrder notional conversion, and the constructor error path.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import Decimal from 'decimal.js'
+import { Contract, Order, UNSET_DOUBLE, UNSET_DECIMAL } from '@traderalice/ibkr'
 
 // Mock ccxt BEFORE importing CcxtAccount
 vi.mock('ccxt', () => {
@@ -38,6 +40,7 @@ vi.mock('ccxt', () => {
 })
 
 import { CcxtAccount } from './CcxtAccount.js'
+import '../../contract-ext.js'
 
 // ==================== Helpers ====================
 
@@ -198,18 +201,19 @@ describe('CcxtAccount — placeOrder notional', () => {
       id: 'ord-1', status: 'open', average: undefined, filled: undefined,
     })
 
-    const result = await acc.placeOrder({
-      contract: {
-        aliceId: 'bybit-BTC/USDT:USDT',
-        symbol: 'BTC/USDT:USDT',
-        secType: 'CRYPTO_PERP',
-        exchange: 'bybit',
-        currency: 'USDT',
-      },
-      side: 'buy',
-      type: 'market',
-      notional: 500, // $500 worth of BTC
-    })
+    const contract = new Contract()
+    contract.aliceId = 'bybit-BTC/USDT:USDT'
+    contract.symbol = 'BTC/USDT:USDT'
+    contract.secType = 'CRYPTO_PERP'
+    contract.exchange = 'bybit'
+    contract.currency = 'USDT'
+
+    const order = new Order()
+    order.action = 'BUY'
+    order.orderType = 'MKT'
+    order.cashQty = 500 // $500 worth of BTC
+
+    const result = await acc.placeOrder(contract, order)
 
     expect(result.success).toBe(true)
     const createOrderCall = (acc as any).exchange.createOrder.mock.calls[0]
@@ -222,18 +226,21 @@ describe('CcxtAccount — placeOrder notional', () => {
     setInitialized(acc, {
       'BTC/USDT:USDT': makeSwapMarket('BTC', 'USDT', 'BTC/USDT:USDT'),
     })
-    const result = await acc.placeOrder({
-      contract: {
-        aliceId: 'bybit-BTC/USDT:USDT',
-        symbol: 'BTC/USDT:USDT',
-        secType: 'CRYPTO_PERP',
-        exchange: 'bybit',
-        currency: 'USDT',
-      },
-      side: 'buy',
-      type: 'market',
-    })
+
+    const contract = new Contract()
+    contract.aliceId = 'bybit-BTC/USDT:USDT'
+    contract.symbol = 'BTC/USDT:USDT'
+    contract.secType = 'CRYPTO_PERP'
+    contract.exchange = 'bybit'
+    contract.currency = 'USDT'
+
+    const order = new Order()
+    order.action = 'BUY'
+    order.orderType = 'MKT'
+    // No totalQuantity or cashQty set
+
+    const result = await acc.placeOrder(contract, order)
     expect(result.success).toBe(false)
-    expect(result.error).toContain('qty or notional')
+    expect(result.error).toContain('totalQuantity or cashQty')
   })
 })

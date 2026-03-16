@@ -35,6 +35,9 @@ importers:
       '@sinclair/typebox':
         specifier: 0.34.48
         version: 0.34.48
+      '@traderalice/ibkr':
+        specifier: workspace:*
+        version: link:packages/ibkr
       '@traderalice/opentypebb':
         specifier: workspace:*
         version: link:packages/opentypebb

@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { Contract, ContractDescription, ContractDetails } from '@traderalice/ibkr'
 import { AccountManager } from './account-manager.js'
 import {
   MockTradingAccount,
   makeContract,
 } from './__test__/mock-account.js'
+import './contract-ext.js'
 
 describe('AccountManager', () => {
   let manager: AccountManager
@@ -71,8 +73,8 @@ describe('AccountManager', () => {
 
   describe('getAggregatedEquity', () => {
     it('aggregates equity across accounts', async () => {
-      const a1 = new MockTradingAccount({ id: 'a1', label: 'A', accountInfo: { equity: 50_000, cash: 30_000, unrealizedPnL: 2_000, realizedPnL: 500 } })
-      const a2 = new MockTradingAccount({ id: 'a2', label: 'B', accountInfo: { equity: 75_000, cash: 60_000, unrealizedPnL: 3_000, realizedPnL: 1_000 } })
+      const a1 = new MockTradingAccount({ id: 'a1', label: 'A', accountInfo: { netLiquidation: 50_000, totalCashValue: 30_000, unrealizedPnL: 2_000, realizedPnL: 500 } })
+      const a2 = new MockTradingAccount({ id: 'a2', label: 'B', accountInfo: { netLiquidation: 75_000, totalCashValue: 60_000, unrealizedPnL: 3_000, realizedPnL: 1_000 } })
       manager.addAccount(a1)
       manager.addAccount(a2)
 
@@ -96,9 +98,14 @@ describe('AccountManager', () => {
   describe('searchContracts', () => {
     it('searches all accounts by default', async () => {
       const a1 = new MockTradingAccount({ id: 'a1' })
-      a1.searchContracts.mockResolvedValue([{ contract: makeContract({ aliceId: 'a1-AAPL' }) }])
+      const desc1 = new ContractDescription()
+      desc1.contract = makeContract({ aliceId: 'a1-AAPL' })
+      a1.searchContracts.mockResolvedValue([desc1])
+
       const a2 = new MockTradingAccount({ id: 'a2' })
-      a2.searchContracts.mockResolvedValue([{ contract: makeContract({ aliceId: 'a2-AAPL' }) }])
+      const desc2 = new ContractDescription()
+      desc2.contract = makeContract({ aliceId: 'a2-AAPL' })
+      a2.searchContracts.mockResolvedValue([desc2])
 
       manager.addAccount(a1)
       manager.addAccount(a2)
@@ -109,9 +116,14 @@ describe('AccountManager', () => {
 
     it('scopes search to specific accountId', async () => {
       const a1 = new MockTradingAccount({ id: 'a1' })
-      a1.searchContracts.mockResolvedValue([{ contract: makeContract({ aliceId: 'a1-AAPL' }) }])
+      const desc1 = new ContractDescription()
+      desc1.contract = makeContract({ aliceId: 'a1-AAPL' })
+      a1.searchContracts.mockResolvedValue([desc1])
+
       const a2 = new MockTradingAccount({ id: 'a2' })
-      a2.searchContracts.mockResolvedValue([{ contract: makeContract({ aliceId: 'a2-AAPL' }) }])
+      const desc2 = new ContractDescription()
+      desc2.contract = makeContract({ aliceId: 'a2-AAPL' })
+      a2.searchContracts.mockResolvedValue([desc2])
 
       manager.addAccount(a1)
       manager.addAccount(a2)
@@ -125,7 +137,9 @@ describe('AccountManager', () => {
       const a1 = new MockTradingAccount({ id: 'a1' })
       a1.searchContracts.mockResolvedValue([])
       const a2 = new MockTradingAccount({ id: 'a2' })
-      a2.searchContracts.mockResolvedValue([{ contract: makeContract() }])
+      const desc = new ContractDescription()
+      desc.contract = makeContract()
+      a2.searchContracts.mockResolvedValue([desc])
 
       manager.addAccount(a1)
       manager.addAccount(a2)
@@ -143,14 +157,16 @@ describe('AccountManager', () => {
       const a1 = new MockTradingAccount({ id: 'a1' })
       manager.addAccount(a1)
 
-      const details = await manager.getContractDetails({ symbol: 'AAPL' }, 'a1')
+      const query = makeContract({ symbol: 'AAPL' })
+      const details = await manager.getContractDetails(query, 'a1')
       expect(details).not.toBeNull()
       expect(details!.contract.symbol).toBe('AAPL')
       expect(details!.longName).toBe('Apple Inc.')
     })
 
     it('returns null for unknown account', async () => {
-      const details = await manager.getContractDetails({ symbol: 'AAPL' }, 'nope')
+      const query = makeContract({ symbol: 'AAPL' })
+      const details = await manager.getContractDetails(query, 'nope')
       expect(details).toBeNull()
     })
   })

@@ -6,6 +6,7 @@
  */
 
 import type { ITradingAccount } from './interfaces.js'
+import './contract-ext.js'
 import type { ITradingGit } from './git/interfaces.js'
 import type { GitExportState, GitState } from './git/types.js'
 import { TradingGit } from './git/TradingGit.js'

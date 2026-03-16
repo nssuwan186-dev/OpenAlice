@@ -1,18 +1,11 @@
-// Contract
-export type {
-  Contract,
-  SecType,
-  OptionType,
-  ComboLeg,
-  DeltaNeutralContract,
-} from './contract.js'
+// Contract extension (aliceId on IBKR Contract)
+import './contract-ext.js'
 
 // Interfaces
 export type {
   Position,
-  OrderRequest,
-  OrderResult,
-  Order,
+  PlaceOrderResult,
+  OpenOrder,
   AccountInfo,
   Quote,
   FundingRate,
@@ -21,7 +14,6 @@ export type {
   MarketClock,
   AccountCapabilities,
   ITradingAccount,
-  WalletState,
 } from './interfaces.js'
 
 // AccountManager
