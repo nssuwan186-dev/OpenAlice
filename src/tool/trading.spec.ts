@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { ContractDescription } from '@traderalice/ibkr'
 import { createTradingTools } from './trading.js'
 import { AccountManager } from '@/domain/trading/account-manager.js'
 import { UnifiedTradingAccount } from '@/domain/trading/UnifiedTradingAccount.js'
-import { MockBroker, makePosition, makeContract } from '@/domain/trading/__test__/mock-broker.js'
+import { MockBroker, makePosition, makeContract } from '@/domain/trading/brokers/mock/index.js'
 import '@/domain/trading/contract-ext.js'
 
 // ==================== Helpers ====================
@@ -111,8 +111,8 @@ describe('createTradingTools — searchContracts', () => {
     desc1.contract = makeContract({ symbol: 'AAPL' })
     const desc2 = new ContractDescription()
     desc2.contract = makeContract({ symbol: 'AAPL' })
-    a1.searchContracts.mockResolvedValue([desc1])
-    a2.searchContracts.mockResolvedValue([desc2])
+    vi.spyOn(a1, 'searchContracts').mockResolvedValue([desc1])
+    vi.spyOn(a2, 'searchContracts').mockResolvedValue([desc2])
     const mgr = makeManager(a1, a2)
     const tools = createTradingTools(mgr)
     const result = await (tools.searchContracts.execute as Function)({ pattern: 'AAPL' })
@@ -124,7 +124,7 @@ describe('createTradingTools — searchContracts', () => {
 
   it('returns no-results message when no UTAs found anything', async () => {
     const a1 = new MockBroker({ id: 'acc1' })
-    a1.searchContracts.mockResolvedValue([])
+    vi.spyOn(a1, 'searchContracts').mockResolvedValue([])
     const mgr = makeManager(a1)
     const tools = createTradingTools(mgr)
     const result = await (tools.searchContracts.execute as Function)({ pattern: 'ZZZZ' })
@@ -142,10 +142,10 @@ describe('createTradingTools — searchContracts', () => {
   it('skips UTAs that throw during searchContracts', async () => {
     const a1 = new MockBroker({ id: 'acc1' })
     const a2 = new MockBroker({ id: 'acc2' })
-    a1.searchContracts.mockRejectedValue(new Error('connection error'))
+    vi.spyOn(a1, 'searchContracts').mockRejectedValue(new Error('connection error'))
     const desc = new ContractDescription()
     desc.contract = makeContract({ symbol: 'BTC' })
-    a2.searchContracts.mockResolvedValue([desc])
+    vi.spyOn(a2, 'searchContracts').mockResolvedValue([desc])
     const mgr = makeManager(a1, a2)
     const tools = createTradingTools(mgr)
     const result = await (tools.searchContracts.execute as Function)({ pattern: 'BTC' })
@@ -161,8 +161,8 @@ describe('createTradingTools — getPortfolio', () => {
   it('returns all positions when symbol is omitted', async () => {
     const acc = new MockBroker({ id: 'acc1' })
     acc.setPositions([
-      makePosition({ contract: makeContract({ symbol: 'AAPL' }) }),
-      makePosition({ contract: makeContract({ symbol: 'TSLA' }) }),
+      makePosition({ contract: makeContract({ aliceId: 'mock-AAPL', symbol: 'AAPL' }) }),
+      makePosition({ contract: makeContract({ aliceId: 'mock-TSLA', symbol: 'TSLA' }) }),
     ])
     const mgr = makeManager(acc)
     const tools = createTradingTools(mgr)
@@ -174,8 +174,8 @@ describe('createTradingTools — getPortfolio', () => {
   it('filters to specific symbol when provided', async () => {
     const acc = new MockBroker({ id: 'acc1' })
     acc.setPositions([
-      makePosition({ contract: makeContract({ symbol: 'AAPL' }) }),
-      makePosition({ contract: makeContract({ symbol: 'TSLA' }) }),
+      makePosition({ contract: makeContract({ aliceId: 'mock-AAPL', symbol: 'AAPL' }) }),
+      makePosition({ contract: makeContract({ aliceId: 'mock-TSLA', symbol: 'TSLA' }) }),
     ])
     const mgr = makeManager(acc)
     const tools = createTradingTools(mgr)

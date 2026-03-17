@@ -1,11 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { ContractDescription } from '@traderalice/ibkr'
 import { AccountManager } from './account-manager.js'
 import { UnifiedTradingAccount } from './UnifiedTradingAccount.js'
 import {
   MockBroker,
   makeContract,
-} from './__test__/mock-broker.js'
+} from './brokers/mock/index.js'
 import './contract-ext.js'
 
 function makeUta(broker: MockBroker, platformId?: string): UnifiedTradingAccount {
@@ -136,12 +136,12 @@ describe('AccountManager', () => {
       const a1 = new MockBroker({ id: 'a1' })
       const desc1 = new ContractDescription()
       desc1.contract = makeContract({ aliceId: 'a1-AAPL' })
-      a1.searchContracts.mockResolvedValue([desc1])
+      vi.spyOn(a1, 'searchContracts').mockResolvedValue([desc1])
 
       const a2 = new MockBroker({ id: 'a2' })
       const desc2 = new ContractDescription()
       desc2.contract = makeContract({ aliceId: 'a2-AAPL' })
-      a2.searchContracts.mockResolvedValue([desc2])
+      vi.spyOn(a2, 'searchContracts').mockResolvedValue([desc2])
 
       manager.add(makeUta(a1))
       manager.add(makeUta(a2))
@@ -154,12 +154,12 @@ describe('AccountManager', () => {
       const a1 = new MockBroker({ id: 'a1' })
       const desc1 = new ContractDescription()
       desc1.contract = makeContract({ aliceId: 'a1-AAPL' })
-      a1.searchContracts.mockResolvedValue([desc1])
+      vi.spyOn(a1, 'searchContracts').mockResolvedValue([desc1])
 
       const a2 = new MockBroker({ id: 'a2' })
       const desc2 = new ContractDescription()
       desc2.contract = makeContract({ aliceId: 'a2-AAPL' })
-      a2.searchContracts.mockResolvedValue([desc2])
+      vi.spyOn(a2, 'searchContracts').mockResolvedValue([desc2])
 
       manager.add(makeUta(a1))
       manager.add(makeUta(a2))
@@ -171,11 +171,11 @@ describe('AccountManager', () => {
 
     it('excludes accounts with no matches', async () => {
       const a1 = new MockBroker({ id: 'a1' })
-      a1.searchContracts.mockResolvedValue([])
+      vi.spyOn(a1, 'searchContracts').mockResolvedValue([])
       const a2 = new MockBroker({ id: 'a2' })
       const desc = new ContractDescription()
       desc.contract = makeContract()
-      a2.searchContracts.mockResolvedValue([desc])
+      vi.spyOn(a2, 'searchContracts').mockResolvedValue([desc])
 
       manager.add(makeUta(a1))
       manager.add(makeUta(a2))
@@ -196,7 +196,7 @@ describe('AccountManager', () => {
       const details = await manager.getContractDetails(query, 'a1')
       expect(details).not.toBeNull()
       expect(details!.contract.symbol).toBe('AAPL')
-      expect(details!.longName).toBe('Apple Inc.')
+      expect(details!.longName).toBe('Mock Contract')
     })
 
     it('returns null for unknown account', async () => {
@@ -217,14 +217,14 @@ describe('AccountManager', () => {
 
       await manager.closeAll()
 
-      expect(b1.close).toHaveBeenCalled()
-      expect(b2.close).toHaveBeenCalled()
+      expect(b1.callCount('close')).toBe(1)
+      expect(b2.callCount('close')).toBe(1)
       expect(manager.size).toBe(0)
     })
 
     it('does not throw if one account fails to close', async () => {
       const b1 = new MockBroker({ id: 'a1' })
-      b1.close.mockRejectedValue(new Error('close failed'))
+      vi.spyOn(b1, 'close').mockRejectedValue(new Error('close failed'))
       manager.add(makeUta(b1))
 
       await manager.closeAll()

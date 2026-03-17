@@ -9,7 +9,7 @@ import { resolveGuards, registerGuard } from './registry.js'
 import type { GuardContext, OperationGuard } from './types.js'
 import type { Operation } from '../git/types.js'
 import type { AccountInfo, Position } from '../brokers/types.js'
-import { MockBroker, makeContract, makePosition } from '../__test__/mock-broker.js'
+import { MockBroker, makeContract, makePosition } from '../brokers/mock/index.js'
 import '../contract-ext.js'
 
 // ==================== Helpers ====================
@@ -247,7 +247,7 @@ describe('createGuardPipeline', () => {
 
   it('fetches positions and account info for guard context', async () => {
     const dispatcher = vi.fn().mockResolvedValue({ success: true })
-    const account = new MockBroker()
+    const account = new MockBroker({ accountInfo: { netLiquidation: 105_000, totalCashValue: 100_000, unrealizedPnL: 5_000, realizedPnL: 1_000 } })
     account.setPositions([makePosition()])
 
     let capturedCtx: GuardContext | undefined
