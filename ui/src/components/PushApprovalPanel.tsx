@@ -4,6 +4,11 @@ import type { TradingAccount, WalletStatus, WalletPushResult, WalletCommitLog } 
 
 // ==================== Types ====================
 
+interface StagedAccount {
+  account: TradingAccount
+  status: WalletStatus
+}
+
 interface PendingAccount {
   account: TradingAccount
   status: WalletStatus
@@ -82,6 +87,7 @@ function statusColor(status: string): string {
 
 export function PushApprovalPanel() {
   const [accounts, setAccounts] = useState<TradingAccount[]>([])
+  const [staged, setStaged] = useState<StagedAccount[]>([])
   const [pending, setPending] = useState<PendingAccount[]>([])
   const [history, setHistory] = useState<AccountHistory[]>([])
   const [pushing, setPushing] = useState<string | null>(null)
@@ -95,6 +101,7 @@ export function PushApprovalPanel() {
       const { accounts: accts } = await api.trading.listAccounts()
       setAccounts(accts)
 
+      const stagedResults: StagedAccount[] = []
       const pendingResults: PendingAccount[] = []
       const historyResults: AccountHistory[] = []
 
@@ -106,6 +113,8 @@ export function PushApprovalPanel() {
           ])
           if (status.pendingMessage) {
             pendingResults.push({ account, status })
+          } else if (status.staged.length > 0) {
+            stagedResults.push({ account, status })
           }
           if (commits.length > 0) {
             historyResults.push({ accountId: account.id, label: account.label || account.id, commits })
@@ -113,6 +122,7 @@ export function PushApprovalPanel() {
         } catch { /* skip unreachable */ }
       }
 
+      setStaged(stagedResults)
       setPending(pendingResults)
       setHistory(historyResults)
     } catch { /* ignore */ }
@@ -156,6 +166,7 @@ export function PushApprovalPanel() {
   // No trading accounts configured — hide panel entirely
   if (accounts.length === 0) return null
 
+  const hasStaged = staged.length > 0
   const hasPending = pending.length > 0
   const hasHistory = history.length > 0
 
@@ -170,9 +181,45 @@ export function PushApprovalPanel() {
         {hasPending && (
           <span className="ml-auto w-2 h-2 rounded-full bg-accent animate-pulse" title="Pending operations" />
         )}
+        {!hasPending && hasStaged && (
+          <span className="ml-auto w-2 h-2 rounded-full bg-yellow-400 animate-pulse" title="Staged (uncommitted)" />
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto">
+        {/* ==================== Staged (uncommitted) Section ==================== */}
+        {hasStaged && (
+          <div className="px-3 py-3 space-y-3">
+            {staged.map(({ account, status }) => (
+              <div key={account.id} className="space-y-2">
+                <div className="text-[11px] text-text-muted font-medium uppercase tracking-wider">
+                  {account.label || account.id}
+                </div>
+
+                <div className="text-xs text-yellow-400/80 font-medium px-2 py-1.5 rounded bg-yellow-400/5 border border-yellow-400/20">
+                  Staged — waiting for AI to commit
+                </div>
+
+                <div className="space-y-0.5">
+                  {status.staged.map((op, i) => {
+                    const { text, side } = formatOp(op)
+                    return (
+                      <div
+                        key={i}
+                        className={`text-xs font-mono px-2 py-1 rounded bg-bg/50 ${
+                          side === 'buy' ? 'text-green-400' : side === 'sell' ? 'text-red-400' : 'text-text-muted'
+                        }`}
+                      >
+                        {text}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* ==================== Pending Section ==================== */}
         {hasPending ? (
           <div className="px-3 py-3 space-y-3">
@@ -274,11 +321,11 @@ export function PushApprovalPanel() {
               </div>
             )}
           </div>
-        ) : (
+        ) : !hasStaged ? (
           <div className="px-3 py-4 text-xs text-text-muted text-center">
             No pending operations
           </div>
-        )}
+        ) : null}
 
         {/* ==================== History Section ==================== */}
         {hasHistory && (
