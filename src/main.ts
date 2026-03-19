@@ -37,6 +37,10 @@ import { createAnalysisTools } from './tool/analysis.js'
 import { SessionStore } from './core/session.js'
 import { ConnectorCenter } from './core/connector-center.js'
 import { ToolCenter } from './core/tool-center.js'
+import { DatabaseManager } from './core/db-manager.js'
+import { loadHotelConfig } from './core/hotel-config.js'
+import { HotelManager } from './domain/hotel/hotel-manager.js'
+import { createHotelTools } from './tool/hotel.js'
 import { AgentCenter } from './core/agent-center.js'
 import { GenerateRouter } from './core/ai-provider-manager.js'
 import { VercelAIProvider } from './ai-providers/vercel-ai-sdk/vercel-provider.js'
@@ -105,6 +109,12 @@ async function loadGitState(accountId: string): Promise<GitExportState | undefin
 
 async function main() {
   const config = await loadConfig()
+
+  const hotelConfig = await loadHotelConfig()
+  const hotelDb = new DatabaseManager({ path: hotelConfig.databasePath })
+  await hotelDb.connect()
+  await hotelDb.initialize(resolve(hotelConfig.schemaPath))
+  const hotelManager = new HotelManager(hotelDb)
 
   // ==================== Trading Account Manager ====================
 
@@ -247,6 +257,7 @@ async function main() {
     toolCenter.register(createNewsArchiveTools(newsStore), 'news')
   }
   toolCenter.register(createAnalysisTools(equityClient, cryptoClient, currencyClient), 'analysis')
+  toolCenter.register(createHotelTools(hotelManager), 'hotel')
 
   console.log(`tool-center: ${toolCenter.list().length} tools registered`)
 

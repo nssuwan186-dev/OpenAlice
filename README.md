@@ -155,6 +155,20 @@ pnpm dev        # start backend (port 3002) with watch mode
 pnpm dev:ui     # start frontend dev server (port 5173) with hot reload
 pnpm build      # production build (backend + UI)
 pnpm test       # run tests
+
+## Hotel Management Extension
+
+Open Alice now ships with a hotel management toolset that pairs a local SQLite store (`data/db/hotel.sqlite`) with a small data model in `data/schema/hotel-schema.sql` and configuration in `data/config/hotel.json`. The `HotelManager` domain layer powers the following AI tools, which you can call directly from Claude, Vercel, or the local UI:
+
+- `listHotelRooms` — list every room, its type, nightly price, and availability flag.
+- `listHotelBookings` — inspect bookings filtered by date range or status.
+- `checkAvailableRooms` — discover rooms that are free between two dates.
+- `listServiceRequests` — surface pending guest requests so you can reassign staff.
+- `updateRoomStatus` — flip a room to `available`, `occupied`, or `maintenance`.
+- `getStaffSchedule` — read scheduled staff coverage for a date.
+- `hotelDailySummary` — summarize occupancy, bookings, service tasks, and staff coverage for the day.
+
+The SQLite schema and config file are loaded automatically at startup, so all you need to do is seed `rooms`, `bookings`, `service_requests`, and `staff_schedule` via SQL or helper scripts before triggering the tools. Pair the toolset with a hotel-focused persona in `data/brain/persona.md` and heartbeat instructions in `data/brain/heartbeat.md` to turn Alice into a hotel operations assistant that watches bookings, monitors requests, and reports to Telegram or the UI.
 ```
 
 > **Note:** Port 3002 serves the UI only after `pnpm build`. For frontend development, use `pnpm dev:ui` (port 5173) which proxies to the backend and provides hot reload.
